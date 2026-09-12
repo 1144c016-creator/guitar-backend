@@ -6,7 +6,6 @@ app.use(cors());
 app.use(express.json());
 
 const TEAM_NAMES = ["Group A", "Group B", "Group C", "Group D", "Group E"];
-const MAX_MEMBERS_PER_GROUP = 8; // 每組人數上限設定為 8 人
 
 let teamCounts = {
     "Group A": 0,
@@ -16,23 +15,13 @@ let teamCounts = {
     "Group E": 0
 };
 
-// 分配小隊 API：優先分配給人數最少且未滿員的小隊
+// 分配小隊 API：取消人數上限限制，全面採取「自動平均分配」演算法
 app.get('/api/assign-team', (req, res) => {
-    // 篩選出尚未滿額的小隊
-    const availableTeams = TEAM_NAMES.filter(team => teamCounts[team] < MAX_MEMBERS_PER_GROUP);
-
-    // 若所有小隊都已達上限
-    if (availableTeams.length === 0) {
-        return res.status(400).json({ 
-            error: `所有小隊均已滿員（每組上限 ${MAX_MEMBERS_PER_GROUP} 人）！` 
-        });
-    }
-
-    // 在未滿額的小隊中尋找人數最少者，維持平均分組
+    // 尋找目前人數最少的小隊，確保無上限且極度平均
     let minCount = Infinity;
     let candidateTeams = [];
 
-    for (const team of availableTeams) {
+    for (const team of TEAM_NAMES) {
         if (teamCounts[team] < minCount) {
             minCount = teamCounts[team];
             candidateTeams = [team];
@@ -41,13 +30,13 @@ app.get('/api/assign-team', (req, res) => {
         }
     }
 
+    // 從目前最少人數的小隊中隨機抽一組分配
     const chosenTeam = candidateTeams[Math.floor(Math.random() * candidateTeams.length)];
     teamCounts[chosenTeam]++;
 
     res.json({
         team: chosenTeam,
-        currentCount: teamCounts[chosenTeam],
-        membersPerGroup: MAX_MEMBERS_PER_GROUP
+        currentCount: teamCounts[chosenTeam]
     });
 });
 
@@ -59,7 +48,7 @@ app.all('/api/reset', (req, res) => {
 
 // 檢查目前人數 API
 app.get('/api/status', (req, res) => {
-    res.json({ teamCounts, maxMembersPerGroup: MAX_MEMBERS_PER_GROUP });
+    res.json({ teamCounts });
 });
 
 const PORT = process.env.PORT || 3000;
