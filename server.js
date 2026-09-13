@@ -23,7 +23,7 @@ const TEAM_ROUTES = {
     '黃組': ["Em", "D", "C", "Am", "G"]
 };
 
-// 5 大關卡完整資料資料庫
+// 5 大關卡完整資料庫
 const CHORDS_INFO = {
     "C": {
         title: "北商海盜的戰帖",
@@ -68,11 +68,12 @@ function initTeams() {
 }
 initTeams();
 
+// 自動清理超過 3 分鐘斷線的幽靈隊員
 function cleanupGhostPlayers(teamName) {
     const t = teams[teamName];
     if (!t) return;
     const now = Date.now();
-    const timeout = 180000; // 3分鐘 timeout
+    const timeout = 180000; 
 
     const onlinePlayers = t.players.filter(p => (now - p.lastSeen) < timeout);
     if (onlinePlayers.length !== t.players.length) {
@@ -199,6 +200,73 @@ app.post('/api/admin/force-pass', (req, res) => {
     res.json({ success: true, message: `${team} 已強制通關目前關卡` });
 });
 
+// 👑【新增功能】管理員自由調動單一隊員至另一組
+app.post('/api/admin/move-player', (req, res) => {
+    const { playerId, targetTeam } = req.body;
+    if (!TEAMS.includes(targetTeam)) return res.status(400).json({ error: "無效的目標小隊" });
+
+    let foundPlayer = null;
+    let oldTeam = null;
+
+    TEAMS.forEach(tName => {
+        const idx = teams[tName].players.findIndex(p => p.id === playerId);
+        if (idx !== -1) {
+            foundPlayer = teams[tName].players.splice(idx, 1)[0];
+            oldTeam = tName;
+            teams[tName].activePlayers = teams[tName].activePlayers.filter(id => id !== playerId);
+            delete teams[tName].submissions[playerId];
+        }
+    });
+
+    if (!foundPlayer) return res.status(404).json({ error: "找不到該隊員" });
+
+    foundPlayer.isReady = false;
+    teams[targetTeam].players.push(foundPlayer);
+    
+    if (teams[targetTeam].isStarted) {
+        teams[targetTeam].activePlayers.push(foundPlayer.id);
+    }
+
+    res.json({ success: true, message: `成功將 ${foundPlayer.name} 從 ${oldTeam} 移動至 ${targetTeam}` });
+});
+
+// 👑【新增功能】管理員踢出 / 刪除單一隊員
+app.post('/api/admin/kick-player', (req, res) => {
+    const { playerId } = req.body;
+    let found = false;
+    TEAMS.forEach(tName => {
+        const idx = teams[tName].players.findIndex(p => p.id === playerId);
+        if (idx !== -1) {
+            teams[tName].players.splice(idx, 1);
+            teams[tName].activePlayers = teams[tName].activePlayers.filter(id => id !== playerId);
+            delete teams[tName].submissions[playerId];
+            found = true;
+        }
+    });
+    res.json({ success: found, message: found ? "已成功移除該隊員" : "找不到該隊員" });
+});
+
+// 👑【新增功能】一鍵自動平分人數 (Rebalance)
+app.post('/api/admin/rebalance-teams', (req, res) => {
+    let allPlayers = [];
+    TEAMS.forEach(tName => {
+        allPlayers.push(...teams[tName].players);
+        teams[tName].players = [];
+        teams[tName].activePlayers = [];
+        teams[tName].submissions = {};
+        teams[tName].isStarted = false;
+        teams[tName].currentLevelIndex = 0;
+    });
+
+    allPlayers.forEach((player, idx) => {
+        const targetTeam = TEAMS[idx % TEAMS.length];
+        player.isReady = false;
+        teams[targetTeam].players.push(player);
+    });
+
+    res.json({ success: true, message: `已將全場 ${allPlayers.length} 名隊員均勻分配至 4 個小隊！` });
+});
+
 // 管理員切換全局遊戲開關
 app.post('/api/admin/toggle-global-start', (req, res) => {
     const { action } = req.body;
@@ -298,12 +366,23 @@ app.get('/api/status', (req, res) => {
     const { team, playerId } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
 
+    // 檢查玩家是否被管理員調動至其他組別
+    let actualTeam = team;
+    if (playerId) {
+        for (const tName of TEAMS) {
+            if (teams[tName].players.some(p => p.id === playerId)) {
+                actualTeam = tName;
+                break;
+            }
+        }
+    }
+
     const teamCounts = {};
     Object.keys(teams).forEach(t => teamCounts[t] = teams[t].players.length);
 
     let teamData = null;
-    if (team && teams[team]) {
-        const t = teams[team];
+    if (actualTeam && teams[actualTeam]) {
+        const t = teams[actualTeam];
         
         let p = t.players.find(x => x.id === playerId);
         if (p) {
@@ -324,7 +403,7 @@ app.get('/api/status', (req, res) => {
             activeList.forEach(pId => {
                 const sub = t.submissions[pId];
                 const playerObj = t.players.find(x => x.id === pId);
-                const pName = playerObj ? `${team}-${playerObj.name}` : pId;
+                const pName = playerObj ? `${actualTeam}-${playerObj.name}` : pId;
                 if (!sub || !sub.isCorrect) {
                     wrongPlayerNames.push(pName);
                 }
@@ -339,7 +418,9 @@ app.get('/api/status', (req, res) => {
         }
 
         teamData = {
-            playersList: t.players.map(x => ({ id: x.id, fullName: `${team}-${x.name}`, isReady: x.isReady })),
+            actualTeam: actualTeam,
+            isMovedByAdmin: (team && actualTeam !== team),
+            playersList: t.players.map(x => ({ id: x.id, fullName: `${actualTeam}-${x.name}`, isReady: x.isReady })),
             totalPlayers: activeList.length,
             submittedCount: submittedCount,
             totalLobbyPlayers: totalLobbyPlayers,
