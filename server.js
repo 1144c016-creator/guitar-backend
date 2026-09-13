@@ -41,6 +41,12 @@ function initTeams() {
 }
 initTeams();
 
+// 0. 重置遊戲資料 API (新增)
+app.get('/api/reset', (req, res) => {
+    initTeams();
+    res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
+});
+
 // 計算各組排行榜
 function getLeaderboard() {
     return Object.keys(teams).map(teamName => {
