@@ -5,7 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 預設隊伍名稱（已設定為 4 組）與題目池
+// 預設隊伍名稱與題目池
 const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
 const CHORD_POOL = ["C", "G", "Am", "Em", "F", "D", "C7"];
 const LEVEL_MODES = [
@@ -24,16 +24,17 @@ const teams = {};
 function initTeams() {
     TEAMS.forEach(team => {
         teams[team] = {
-            players: [],             // [{ id: 'player_xxx', joinedAt: timestamp }]
+            players: [],             // [{ id: 'player_xxx', joinedAt: timestamp, isReady: false }]
+            activePlayers: [],       // ['player_xxx', ...] 當前關卡實際參賽的玩家 ID 列表
             isStarted: false,        // 是否已開始遊戲
             startTime: null,         // 開賽時間
             finishTimeSeconds: null, // 通關總耗時
             currentLevelIndex: 0,    // 當前關卡索引
             chords: CHORD_POOL,
             levelModes: LEVEL_MODES,
-            ensembleFrets: {},       // 合奏模式全組琴弦 {1: -1, 2: 3 ...}
-            ensembleDone: {},        // 合奏模式已確認玩家 {playerId: true}
-            lockStatus: {},          // 獨立解鎖模式完成玩家 {playerId: true}
+            ensembleFrets: {},       // 合奏模式全組琴弦
+            ensembleDone: {},        // 合奏模式已確認玩家
+            lockStatus: {},          // 獨立解鎖模式完成玩家
             relayTurnIndex: 0,       // 棒次接力當前棒次
             wrongAttempts: 0         // 答錯總次數
         };
@@ -41,7 +42,7 @@ function initTeams() {
 }
 initTeams();
 
-// 0. 重置遊戲資料 API (新增)
+// 重置遊戲資料 API
 app.get('/api/reset', (req, res) => {
     initTeams();
     res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
@@ -80,7 +81,7 @@ app.get('/api/assign-team', (req, res) => {
     });
 
     const playerId = 'player_' + Math.random().toString(36).substring(2, 11);
-    teams[minTeam].players.push({ id: playerId, joinedAt: Date.now() });
+    teams[minTeam].players.push({ id: playerId, joinedAt: Date.now(), isReady: false });
 
     res.json({
         playerId: playerId,
@@ -101,10 +102,23 @@ app.get('/api/status', (req, res) => {
     let teamData = null;
     if (team && teams[team]) {
         const t = teams[team];
-        const playerIndex = t.players.findIndex(p => p.id === playerId);
+        const readyCount = t.players.filter(p => p.isReady).length;
+        const totalLobbyPlayers = t.players.length;
+        const allReady = totalLobbyPlayers > 0 && readyCount === totalLobbyPlayers;
+        
+        // 判斷該玩家是否為當前關卡的參賽者（若遊戲已開始且 ID 不在 activePlayers 中，則為中途加入觀戰者）
+        const isSpectating = t.isStarted && !t.activePlayers.includes(playerId);
+        const activeList = t.activePlayers.length > 0 ? t.activePlayers : t.players.map(p => p.id);
+        const playerIndex = activeList.indexOf(playerId);
+        const myPlayer = t.players.find(p => p.id === playerId);
 
         teamData = {
-            totalPlayers: t.players.length,
+            totalPlayers: activeList.length,           // 當前關卡實際計算用的人數
+            totalLobbyPlayers: totalLobbyPlayers,     // 大廳總簽到人數
+            readyCount: readyCount,                   // 已準備人數
+            allReady: allReady,                       // 是否全員勾選準備
+            isMyReady: myPlayer ? myPlayer.isReady : false,
+            isSpectating: isSpectating,               // 是否為中途加入觀戰中
             playerIndex: playerIndex >= 0 ? playerIndex : 0,
             isStarted: t.isStarted,
             currentLevelIndex: t.currentLevelIndex,
@@ -131,16 +145,31 @@ app.post('/api/action', (req, res) => {
     const teamData = teams[team];
     if (!teamData) return res.status(400).json({ error: "Team not found" });
 
-    // 開始遊戲
-    if (action === 'start_game') {
-        if (!teamData.isStarted) {
-            teamData.isStarted = true;
-            teamData.startTime = Date.now();
+    // 切換 Ready 準備狀態
+    if (action === 'toggle_ready') {
+        const player = teamData.players.find(p => p.id === playerId);
+        if (player) {
+            player.isReady = !!(data && data.isReady);
         }
         return res.json({ success: true });
     }
 
-    // 合奏模式：即時更新自己的琴弦
+    // 開始遊戲（須全員 Ready）
+    if (action === 'start_game') {
+        const allReady = teamData.players.length > 0 && teamData.players.every(p => p.isReady);
+        if (!allReady) {
+            return res.status(400).json({ error: "全員尚未勾選集合完畢！" });
+        }
+        if (!teamData.isStarted) {
+            teamData.isStarted = true;
+            teamData.startTime = Date.now();
+            // 鎖定第一關的實際參賽陣容
+            teamData.activePlayers = teamData.players.map(p => p.id);
+        }
+        return res.json({ success: true });
+    }
+
+    // 合奏模式：即時更新琴弦
     if (action === 'ensemble_update') {
         if (!teamData.ensembleFrets) teamData.ensembleFrets = {};
         if (data && data.frets) {
@@ -150,15 +179,13 @@ app.post('/api/action', (req, res) => {
         return res.json({ success: true });
     }
 
-    // 合奏模式：點擊「確認完成」
+    // 合奏模式：確認完成
     if (action === 'ensemble_submit') {
         if (!teamData.ensembleFrets) teamData.ensembleFrets = {};
         if (!teamData.ensembleDone) teamData.ensembleDone = {};
-
         if (data && data.frets) {
             Object.assign(teamData.ensembleFrets, data.frets);
         }
-
         teamData.ensembleDone[playerId] = true;
         return res.json({ success: true, doneCount: Object.keys(teamData.ensembleDone).length });
     }
@@ -191,6 +218,9 @@ app.post('/api/action', (req, res) => {
         teamData.ensembleDone = {};
         teamData.lockStatus = {};
         teamData.relayTurnIndex = 0;
+
+        // 核心機制：前往下一關時更新參賽陣容，將中途加入的新隊員納入新關卡
+        teamData.activePlayers = teamData.players.map(p => p.id);
 
         const isFinished = teamData.currentLevelIndex >= (teamData.chords ? teamData.chords.length : 7);
         if (isFinished && !teamData.finishTimeSeconds) {
