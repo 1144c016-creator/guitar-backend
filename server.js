@@ -15,6 +15,17 @@ const TEAM_ROUTES = {
     '黃組': ["Em", "F", "D", "C", "Am", "G", "C7"]
 };
 
+// 隱藏和弦名稱，手機畫面上僅顯示線索
+const HINTS_DB = {
+    "C": "尋找琴頸最上方的階梯！由三根手指層層築起的亮麗暖音。",
+    "Am": "當陽光褪去，與 C 僅有一指之差的平行低語。",
+    "G": "跨越最狂野的高低音！六弦與一弦在第 3 品同時緊扣的開朗陽光。",
+    "Em": "極致簡潔的搖滾靈魂！全按法僅需兩根手指壓在第 2 品的低沉律動。",
+    "F": "橫跨一二弦的大魔王關卡！考驗全隊不服輸的指力。",
+    "D": "靜音高掛的粗弦！三指在下半部形成三角形的清脆躍動。",
+    "C7": "打破傳統和聲的最後一把鑰匙！加入小七音解開傳承多年的爵士總決戰。"
+};
+
 const teams = {};
 
 function initTeams() {
@@ -35,7 +46,7 @@ function initTeams() {
 }
 initTeams();
 
-// 清理長時間離線的幽靈玩家 (延長至 3 分鐘 = 180000 ms)
+// 清理離線幽靈玩家 (3 分鐘 timeout)
 function cleanupGhostPlayers(teamName) {
     const t = teams[teamName];
     if (!t) return;
@@ -84,13 +95,11 @@ app.get('/api/reset', (req, res) => {
     res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
 });
 
-// 1. 分配與驗證隊伍 API (支援舊身份綁定)
+// 1. 分配與驗證隊伍 API
 app.get('/api/assign-team', (req, res) => {
     const { existingPlayerId, existingTeam } = req.query;
-
     TEAMS.forEach(cleanupGhostPlayers);
 
-    // 驗證 1：若帶有舊的 playerId 且仍在後端記憶體中，直接返回原隊伍
     if (existingPlayerId) {
         for (const tName of TEAMS) {
             const existingPlayer = teams[tName].players.find(p => p.id === existingPlayerId);
@@ -100,12 +109,12 @@ app.get('/api/assign-team', (req, res) => {
                     playerId: existingPlayer.id,
                     team: tName,
                     defaultName: existingPlayer.name,
-                    chords: teams[tName].chords
+                    chords: teams[tName].chords,
+                    hints: teams[tName].chords.map(c => HINTS_DB[c])
                 });
             }
         }
 
-        // 驗證 2：即便因為逾時被清理，只要手機帶有舊隊伍名稱，自動修復並重回該隊伍
         if (existingTeam && teams[existingTeam]) {
             const defaultName = `隊員${teams[existingTeam].players.length + 1}`;
             teams[existingTeam].players.push({
@@ -118,12 +127,12 @@ app.get('/api/assign-team', (req, res) => {
                 playerId: existingPlayerId,
                 team: existingTeam,
                 defaultName,
-                chords: teams[existingTeam].chords
+                chords: teams[existingTeam].chords,
+                hints: teams[existingTeam].chords.map(c => HINTS_DB[c])
             });
         }
     }
 
-    // 驗證 3：完全新的玩家才隨機/分流分配至最少人數的隊伍
     let minTeam = TEAMS[0];
     let minCount = teams[TEAMS[0]].players.length;
 
@@ -147,14 +156,14 @@ app.get('/api/assign-team', (req, res) => {
         playerId,
         team: minTeam,
         defaultName,
-        chords: teams[minTeam].chords
+        chords: teams[minTeam].chords,
+        hints: teams[minTeam].chords.map(c => HINTS_DB[c])
     });
 });
 
 // 2. 狀態輪詢 API
 app.get('/api/status', (req, res) => {
     const { team, playerId } = req.query;
-    
     TEAMS.forEach(cleanupGhostPlayers);
 
     const teamCounts = {};
@@ -168,7 +177,6 @@ app.get('/api/status', (req, res) => {
         if (p) {
             p.lastSeen = Date.now();
         } else if (playerId) {
-            // 自動補回遺失玩家
             p = { id: playerId, name: `隊員${t.players.length + 1}`, isReady: false, lastSeen: Date.now() };
             t.players.push(p);
         }
@@ -210,6 +218,7 @@ app.get('/api/status', (req, res) => {
             isStarted: t.isStarted,
             currentLevelIndex: t.currentLevelIndex,
             chords: t.chords,
+            hints: t.chords.map(c => HINTS_DB[c]),
             hasSubmitted: !!t.submissions[playerId],
             levelResult: t.levelResult
         };
