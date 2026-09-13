@@ -1,149 +1,114 @@
 const express = require('express');
 const cors = require('cors');
-const app = express();
 
+const app = express();
 app.use(cors());
 app.use(express.json());
 
-const TEAM_NAMES = ["Group A", "Group B", "Group C", "Group D", "Group E"];
-const ALL_CHORDS = ["C", "D", "G", "Am", "Em", "F", "Fm", "C7"];
-
-// 關卡模式配置 (共 8 關)
+// 預設隊伍名稱與題目池
+const TEAMS = ['紅組', '藍組', '綠組', '黃組', '紫組', '橘組'];
+const CHORD_POOL = ["C", "G", "Am", "Em", "F", "D", "C7"];
 const LEVEL_MODES = [
-    { type: 'lock', name: '🔒 全員完成鎖定' },
-    { type: 'lock', name: '🔒 全員完成鎖定' },
-    { type: 'relay', name: '⚡ 多人順序接力' },
-    { type: 'lock', name: '🔒 全員完成鎖定' },
-    { type: 'relay', name: '⚡ 多人順序接力' },
-    { type: 'ensemble', name: '🎸 合奏分工彈奏' },
-    { type: 'ensemble', name: '🎸 合奏分工彈奏' },
-    { type: 'boss', name: '🔥 終極大合奏' }
+    { type: 'lock', name: '全員獨立解鎖' },
+    { type: 'relay', name: '棒次接力模式' },
+    { type: 'ensemble', name: '團隊合奏分工' },
+    { type: 'lock', name: '全員獨立解鎖' },
+    { type: 'relay', name: '棒次接力模式' },
+    { type: 'ensemble', name: '團隊合奏分工' },
+    { type: 'boss', name: '終極大合奏 (BOSS)' }
 ];
 
-let gameState = {};
+// 記憶體中的小隊資料儲存區
+const teams = {};
 
-function shuffle(array) {
-    let arr = [...array];
-    for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-}
-
-// 初始化/重置遊戲：採用環狀錯位演算法，100% 確保各組每關題目完全錯開
-function initGame() {
-    gameState = { teams: {}, players: {} };
-    
-    // 1. 先把 8 個和弦隨機洗牌一次，作為基礎母陣列
-    const baseChords = shuffle(ALL_CHORDS);
-
-    // 2. 利用「環狀錯位 (Cyclic Shift Array)」演算法分配題目
-    TEAM_NAMES.forEach((teamName, index) => {
-        let teamChords = [];
-        for (let i = 0; i < baseChords.length; i++) {
-            // 每組依照索引偏移 index 個位置 (Group A 偏 0, Group B 偏 1, Group C 偏 2...)
-            teamChords.push(baseChords[(i + index) % baseChords.length]);
-        }
-
-        gameState.teams[teamName] = {
-            name: teamName,
-            players: [], 
-            isFinished: false,
-            finalMemberCount: 0,
-            finishTimeSeconds: null,
-            wrongAttempts: 0,
-            startTime: null,
-            chords: teamChords, // 100% 絕不重複的專屬題目順序
-            currentLevelIndex: 0,
-            lockStatus: {}, // Mode 1 玩家完成狀態
-            ensembleFrets: { 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1 }, // Mode 2 全組共用指法
-            relayTurnIndex: 0 // Mode 3 目前接力棒次
+function initTeams() {
+    TEAMS.forEach(team => {
+        teams[team] = {
+            players: [],             // [{ id: 'player_xxx', joinedAt: timestamp }]
+            isStarted: false,        // 是否已開始遊戲
+            startTime: null,         // 開賽時間
+            finishTimeSeconds: null, // 通關總耗時
+            currentLevelIndex: 0,    // 當前關卡索引
+            chords: CHORD_POOL,
+            levelModes: LEVEL_MODES,
+            ensembleFrets: {},       // 合奏模式全組琴弦 {1: -1, 2: 3 ...}
+            ensembleDone: {},        // 合奏模式已確認玩家 {playerId: true}
+            lockStatus: {},          // 獨立解鎖模式完成玩家 {playerId: true}
+            relayTurnIndex: 0,       // 棒次接力當前棒次
+            wrongAttempts: 0         // 答錯總次數
         };
     });
 }
-initGame();
+initTeams();
 
-// 分配小隊 API
-app.get('/api/assign-team', (req, res) => {
-    let candidateTeams = TEAM_NAMES.filter(t => !gameState.teams[t].isFinished);
-    if (candidateTeams.length === 0) candidateTeams = TEAM_NAMES;
-
-    let minCount = Infinity;
-    let chosenTeams = [];
-    candidateTeams.forEach(t => {
-        let count = gameState.teams[t].players.length;
-        if (count < minCount) {
-            minCount = count;
-            chosenTeams = [t];
-        } else if (count === minCount) {
-            chosenTeams.push(t);
-        }
-    });
-
-    const chosenTeam = chosenTeams[Math.floor(Math.random() * chosenTeams.length)];
-    const playerId = 'p_' + Math.random().toString(36).substr(2, 9);
-    
-    gameState.teams[chosenTeam].players.push(playerId);
-    gameState.players[playerId] = {
-        id: playerId,
-        team: chosenTeam
-    };
-
-    res.json({
-        playerId,
-        team: chosenTeam,
-        chords: gameState.teams[chosenTeam].chords,
-        levelModes: LEVEL_MODES
-    });
-});
-
-// 計算即時排行榜 (已完成優先依時間排序，未完成依關卡數排序)
+// 計算各組排行榜
 function getLeaderboard() {
-    return TEAM_NAMES.map(tName => {
-        const t = gameState.teams[tName];
+    return Object.keys(teams).map(teamName => {
+        const t = teams[teamName];
         return {
-            team: tName,
-            isFinished: t.isFinished,
-            memberCount: t.isFinished ? t.finalMemberCount : t.players.length,
-            finishTimeSeconds: t.finishTimeSeconds,
-            wrongAttempts: t.wrongAttempts,
-            currentLevel: t.currentLevelIndex + 1
+            team: teamName,
+            memberCount: t.players.length,
+            currentLevel: t.currentLevelIndex + 1,
+            isFinished: t.currentLevelIndex >= t.chords.length,
+            finishTimeSeconds: t.finishTimeSeconds || 0,
+            wrongAttempts: t.wrongAttempts || 0
         };
     }).sort((a, b) => {
         if (a.isFinished && !b.isFinished) return -1;
         if (!a.isFinished && b.isFinished) return 1;
-        if (a.isFinished && b.isFinished) {
-            return a.finishTimeSeconds - b.finishTimeSeconds;
-        }
+        if (a.isFinished && b.isFinished) return a.finishTimeSeconds - b.finishTimeSeconds;
         return b.currentLevel - a.currentLevel;
     });
 }
 
-// 狀態輪詢 API
-app.get('/api/status', (req, res) => {
-    const { playerId, team } = req.query;
+// 1. 分配隊伍 API
+app.get('/api/assign-team', (req, res) => {
+    let minTeam = TEAMS[0];
+    let minCount = teams[TEAMS[0]].players.length;
 
-    let teamCounts = {};
-    TEAM_NAMES.forEach(t => {
-        teamCounts[t] = gameState.teams[t].isFinished 
-            ? gameState.teams[t].finalMemberCount 
-            : gameState.teams[t].players.length;
+    TEAMS.forEach(team => {
+        if (teams[team].players.length < minCount) {
+            minCount = teams[team].players.length;
+            minTeam = team;
+        }
+    });
+
+    const playerId = 'player_' + Math.random().toString(36).substring(2, 11);
+    teams[minTeam].players.push({ id: playerId, joinedAt: Date.now() });
+
+    res.json({
+        playerId: playerId,
+        team: minTeam,
+        chords: teams[minTeam].chords,
+        levelModes: teams[minTeam].levelModes
+    });
+});
+
+// 2. 輪詢狀態 API
+app.get('/api/status', (req, res) => {
+    const { team, playerId } = req.query;
+    const teamCounts = {};
+    Object.keys(teams).forEach(t => {
+        teamCounts[t] = teams[t].players.length;
     });
 
     let teamData = null;
-    if (team && gameState.teams[team]) {
-        const t = gameState.teams[team];
-        let pIndex = t.players.indexOf(playerId);
+    if (team && teams[team]) {
+        const t = teams[team];
+        const playerIndex = t.players.findIndex(p => p.id === playerId);
+
         teamData = {
-            currentLevelIndex: t.currentLevelIndex,
             totalPlayers: t.players.length,
-            playerIndex: pIndex >= 0 ? pIndex : 0,
-            lockStatus: t.lockStatus,
-            ensembleFrets: t.ensembleFrets,
-            relayTurnIndex: t.relayTurnIndex,
-            isFinished: t.isFinished,
-            wrongAttempts: t.wrongAttempts
+            playerIndex: playerIndex >= 0 ? playerIndex : 0,
+            isStarted: t.isStarted,
+            currentLevelIndex: t.currentLevelIndex,
+            chords: t.chords,
+            levelModes: t.levelModes,
+            ensembleFrets: t.ensembleFrets || {},
+            ensembleDone: t.ensembleDone || {},
+            lockStatus: t.lockStatus || {},
+            relayTurnIndex: t.relayTurnIndex || 0,
+            wrongAttempts: t.wrongAttempts || 0
         };
     }
 
@@ -154,60 +119,85 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// 遊戲互動操作 API
+// 3. 玩家動作與驗證 API
 app.post('/api/action', (req, res) => {
     const { playerId, team, action, data } = req.body;
-    const t = gameState.teams[team];
-    if (!t) return res.status(400).json({ error: "無效的組別" });
+    const teamData = teams[team];
+    if (!teamData) return res.status(400).json({ error: "Team not found" });
 
+    // 開始遊戲
     if (action === 'start_game') {
-        if (!t.startTime) t.startTime = Date.now();
+        if (!teamData.isStarted) {
+            teamData.isStarted = true;
+            teamData.startTime = Date.now();
+        }
         return res.json({ success: true });
     }
 
-    if (action === 'lock_submit') {
-        t.lockStatus[playerId] = data.isCorrect;
-        if (!data.isCorrect) t.wrongAttempts++;
-        return res.json({ success: true });
-    }
-
+    // 合奏模式：即時更新自己的琴弦（不覆蓋隊友，並重置 confirmation 狀態）
     if (action === 'ensemble_update') {
-        if (data.frets) Object.assign(t.ensembleFrets, data.frets);
-        return res.json({ success: true, ensembleFrets: t.ensembleFrets });
+        if (!teamData.ensembleFrets) teamData.ensembleFrets = {};
+        if (data && data.frets) {
+            Object.assign(teamData.ensembleFrets, data.frets);
+        }
+        // 重置確認狀態，防止手殘改動時卡在舊的已確認狀態
+        teamData.ensembleDone = {};
+        return res.json({ success: true });
     }
 
-    if (action === 'relay_submit') {
-        if (data.isCorrect) {
-            t.relayTurnIndex++;
+    // 合奏模式：點擊「確認完成」
+    if (action === 'ensemble_submit') {
+        if (!teamData.ensembleFrets) teamData.ensembleFrets = {};
+        if (!teamData.ensembleDone) teamData.ensembleDone = {};
+
+        if (data && data.frets) {
+            Object.assign(teamData.ensembleFrets, data.frets);
+        }
+
+        teamData.ensembleDone[playerId] = true;
+        return res.json({ success: true, doneCount: Object.keys(teamData.ensembleDone).length });
+    }
+
+    // 獨立解鎖模式：提交答案
+    if (action === 'lock_submit') {
+        if (!teamData.lockStatus) teamData.lockStatus = {};
+        if (data && data.isCorrect) {
+            teamData.lockStatus[playerId] = true;
         } else {
-            t.wrongAttempts++;
+            teamData.wrongAttempts = (teamData.wrongAttempts || 0) + 1;
         }
-        return res.json({ success: true, relayTurnIndex: t.relayTurnIndex });
+        return res.json({ success: true });
     }
 
-    if (action === 'next_level') {
-        t.currentLevelIndex++;
-        t.lockStatus = {}; 
-        t.ensembleFrets = { 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1 }; 
-        t.relayTurnIndex = 0; 
-
-        // 全關卡通過，永久凍結人數與通關時間
-        if (t.currentLevelIndex >= ALL_CHORDS.length && !t.isFinished) {
-            t.isFinished = true;
-            t.finalMemberCount = t.players.length; // 人數硬性凍結
-            t.finishTimeSeconds = Math.floor((Date.now() - (t.startTime || Date.now())) / 1000);
+    // 接力模式：提交答案
+    if (action === 'relay_submit') {
+        if (data && data.isCorrect) {
+            teamData.relayTurnIndex = (teamData.relayTurnIndex || 0) + 1;
+        } else {
+            teamData.wrongAttempts = (teamData.wrongAttempts || 0) + 1;
         }
-        return res.json({ success: true, currentLevelIndex: t.currentLevelIndex, isFinished: t.isFinished });
+        return res.json({ success: true });
+    }
+
+    // 前往下一關
+    if (action === 'next_level') {
+        teamData.currentLevelIndex = (teamData.currentLevelIndex || 0) + 1;
+        teamData.ensembleFrets = {};
+        teamData.ensembleDone = {};
+        teamData.lockStatus = {};
+        teamData.relayTurnIndex = 0;
+
+        const isFinished = teamData.currentLevelIndex >= (teamData.chords ? teamData.chords.length : 7);
+        if (isFinished && !teamData.finishTimeSeconds) {
+            teamData.finishTimeSeconds = Math.floor((Date.now() - (teamData.startTime || Date.now())) / 1000);
+        }
+        return res.json({ success: true, isFinished });
     }
 
     res.json({ success: true });
 });
 
-// 完全重置 API
-app.all('/api/reset', (req, res) => {
-    initGame();
-    res.json({ message: "遊戲已重置", leaderboard: getLeaderboard() });
-});
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🎸 Server is running on port ${PORT}`);
+});
