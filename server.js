@@ -5,6 +5,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// 管理員帳號密碼
+const ADMIN_USER = '0921';
+const ADMIN_PASS = '1144c016';
+
+// 全局遊戲開始狀態 (預設關閉，需管理員點擊開啟)
+let isGameGlobalStarted = false;
+
 const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
 
 // 各組 5 關錯開分流路線（C, Am, G, Em, D）
@@ -39,9 +46,10 @@ const CHORDS_INFO = {
     }
 };
 
-const teams = {};
+let teams = {};
 
 function initTeams() {
+    teams = {};
     TEAMS.forEach(team => {
         teams[team] = {
             players: [],
@@ -90,7 +98,7 @@ function getLeaderboard() {
             memberCount: t.players.length,
             currentLevel: t.currentLevelIndex + 1,
             isFinished: t.currentLevelIndex >= t.chords.length,
-            finishTimeSeconds: t.finishTimeSeconds || 0,
+            finishTimeSeconds: t.finishTimeSeconds || (t.startTime ? Math.floor((Date.now() - t.startTime) / 1000) : 0),
             wrongAttempts: t.wrongAttempts || 0
         };
     }).sort((a, b) => {
@@ -101,9 +109,66 @@ function getLeaderboard() {
     });
 }
 
-// 重置 API
+function getAdminDashboardData() {
+    return Object.keys(teams).map(tName => {
+        const t = teams[tName];
+        const currentChord = t.chords[t.currentLevelIndex] || null;
+        const currentInfo = currentChord ? CHORDS_INFO[currentChord] : { title: "已完成所有關卡", hint: "" };
+        const activeCount = t.activePlayers.length > 0 ? t.activePlayers.length : t.players.length;
+
+        let elapsed = 0;
+        if (t.finishTimeSeconds) {
+            elapsed = t.finishTimeSeconds;
+        } else if (t.startTime) {
+            elapsed = Math.floor((Date.now() - t.startTime) / 1000);
+        }
+
+        return {
+            team: tName,
+            isStarted: t.isStarted,
+            isFinished: t.currentLevelIndex >= t.chords.length,
+            currentLevelIndex: t.currentLevelIndex,
+            currentChord: currentChord || 'END',
+            levelTitle: currentInfo.title,
+            totalPlayers: t.players.length,
+            activeCount: activeCount,
+            readyCount: t.players.filter(p => p.isReady).length,
+            submittedCount: Object.keys(t.submissions).length,
+            wrongAttempts: t.wrongAttempts,
+            elapsedSeconds: elapsed,
+            players: t.players.map(p => ({ id: p.id, name: p.name, isReady: p.isReady }))
+        };
+    });
+}
+
+// ---------------- API 路由 ----------------
+
+// 管理員登入
+app.post('/api/admin/login', (req, res) => {
+    const { username, password } = req.body;
+    if (username === ADMIN_USER && password === ADMIN_PASS) {
+        return res.json({ success: true, message: "管理員登入成功" });
+    }
+    return res.status(401).json({ success: false, error: "管理員帳號或密碼錯誤！" });
+});
+
+// 管理員切換全局遊戲開關
+app.post('/api/admin/toggle-global-start', (req, res) => {
+    const { action } = req.body; // 'start' or 'stop'
+    if (action === 'start') {
+        isGameGlobalStarted = true;
+    } else if (action === 'stop') {
+        isGameGlobalStarted = false;
+    } else {
+        isGameGlobalStarted = !isGameGlobalStarted;
+    }
+    res.json({ success: true, isGameGlobalStarted });
+});
+
+// 全局重置 API
 app.get('/api/reset', (req, res) => {
     initTeams();
+    isGameGlobalStarted = false;
     res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
 });
 
@@ -111,6 +176,11 @@ app.get('/api/reset', (req, res) => {
 app.get('/api/assign-team', (req, res) => {
     const { existingPlayerId, existingTeam } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
+
+    // 如果遊戲未由管理員開啟，且非舊玩家重連，則拒絕進入
+    if (!isGameGlobalStarted && !existingPlayerId) {
+        return res.status(403).json({ error: "GAME_NOT_STARTED", message: "遊戲尚未由管理員開啟，請稍後！" });
+    }
 
     if (existingPlayerId) {
         for (const tName of TEAMS) {
@@ -122,7 +192,8 @@ app.get('/api/assign-team', (req, res) => {
                     team: tName,
                     defaultName: existingPlayer.name,
                     chords: teams[tName].chords,
-                    chordsInfo: teams[tName].chords.map(c => CHORDS_INFO[c])
+                    chordsInfo: teams[tName].chords.map(c => CHORDS_INFO[c]),
+                    isGameGlobalStarted
                 });
             }
         }
@@ -140,7 +211,8 @@ app.get('/api/assign-team', (req, res) => {
                 team: existingTeam,
                 defaultName,
                 chords: teams[existingTeam].chords,
-                chordsInfo: teams[existingTeam].chords.map(c => CHORDS_INFO[c])
+                chordsInfo: teams[existingTeam].chords.map(c => CHORDS_INFO[c]),
+                isGameGlobalStarted
             });
         }
     }
@@ -169,11 +241,12 @@ app.get('/api/assign-team', (req, res) => {
         team: minTeam,
         defaultName,
         chords: teams[minTeam].chords,
-        chordsInfo: teams[minTeam].chords.map(c => CHORDS_INFO[c])
+        chordsInfo: teams[minTeam].chords.map(c => CHORDS_INFO[c]),
+        isGameGlobalStarted
     });
 });
 
-// 狀態輪詢 API
+// 狀態輪詢 API (包含一般玩家狀態與管理員數據)
 app.get('/api/status', (req, res) => {
     const { team, playerId } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
@@ -236,7 +309,13 @@ app.get('/api/status', (req, res) => {
         };
     }
 
-    res.json({ teamCounts, teamData, leaderboard: getLeaderboard() });
+    res.json({ 
+        isGameGlobalStarted,
+        teamCounts, 
+        teamData, 
+        leaderboard: getLeaderboard(),
+        adminDashboard: getAdminDashboardData()
+    });
 });
 
 // 玩家動作 API
