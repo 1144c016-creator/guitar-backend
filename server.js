@@ -20,7 +20,7 @@ const teams = {};
 function initTeams() {
     TEAMS.forEach(team => {
         teams[team] = {
-            players: [],             // [{ id, name, isReady, lastSeen }]
+            players: [],
             activePlayers: [],
             isStarted: false,
             startTime: null,
@@ -35,11 +35,12 @@ function initTeams() {
 }
 initTeams();
 
+// 清理長時間離線的幽靈玩家 (延長至 3 分鐘 = 180000 ms)
 function cleanupGhostPlayers(teamName) {
     const t = teams[teamName];
     if (!t) return;
     const now = Date.now();
-    const timeout = 15000;
+    const timeout = 180000; 
 
     const onlinePlayers = t.players.filter(p => (now - p.lastSeen) < timeout);
     if (onlinePlayers.length !== t.players.length) {
@@ -83,13 +84,50 @@ app.get('/api/reset', (req, res) => {
     res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
 });
 
-// 1. 分配隊伍 API
+// 1. 分配與驗證隊伍 API (支援舊身份綁定)
 app.get('/api/assign-team', (req, res) => {
+    const { existingPlayerId, existingTeam } = req.query;
+
+    TEAMS.forEach(cleanupGhostPlayers);
+
+    // 驗證 1：若帶有舊的 playerId 且仍在後端記憶體中，直接返回原隊伍
+    if (existingPlayerId) {
+        for (const tName of TEAMS) {
+            const existingPlayer = teams[tName].players.find(p => p.id === existingPlayerId);
+            if (existingPlayer) {
+                existingPlayer.lastSeen = Date.now();
+                return res.json({
+                    playerId: existingPlayer.id,
+                    team: tName,
+                    defaultName: existingPlayer.name,
+                    chords: teams[tName].chords
+                });
+            }
+        }
+
+        // 驗證 2：即便因為逾時被清理，只要手機帶有舊隊伍名稱，自動修復並重回該隊伍
+        if (existingTeam && teams[existingTeam]) {
+            const defaultName = `隊員${teams[existingTeam].players.length + 1}`;
+            teams[existingTeam].players.push({
+                id: existingPlayerId,
+                name: defaultName,
+                isReady: false,
+                lastSeen: Date.now()
+            });
+            return res.json({
+                playerId: existingPlayerId,
+                team: existingTeam,
+                defaultName,
+                chords: teams[existingTeam].chords
+            });
+        }
+    }
+
+    // 驗證 3：完全新的玩家才隨機/分流分配至最少人數的隊伍
     let minTeam = TEAMS[0];
     let minCount = teams[TEAMS[0]].players.length;
 
     TEAMS.forEach(team => {
-        cleanupGhostPlayers(team);
         if (teams[team].players.length < minCount) {
             minCount = teams[team].players.length;
             minTeam = team;
@@ -126,8 +164,14 @@ app.get('/api/status', (req, res) => {
     if (team && teams[team]) {
         const t = teams[team];
         
-        const p = t.players.find(x => x.id === playerId);
-        if (p) p.lastSeen = Date.now();
+        let p = t.players.find(x => x.id === playerId);
+        if (p) {
+            p.lastSeen = Date.now();
+        } else if (playerId) {
+            // 自動補回遺失玩家
+            p = { id: playerId, name: `隊員${t.players.length + 1}`, isReady: false, lastSeen: Date.now() };
+            t.players.push(p);
+        }
 
         const readyCount = t.players.filter(x => x.isReady).length;
         const totalLobbyPlayers = t.players.length;
