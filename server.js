@@ -7,7 +7,7 @@ app.use(express.json());
 
 const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
 
-// 5 關卡防塞車路線
+// 各組 5 關錯開分流路線（C, Am, G, Em, D）
 const TEAM_ROUTES = {
     '紅組': ["C", "Am", "G", "Em", "D"],
     '藍組': ["Am", "G", "Em", "D", "C"],
@@ -15,13 +15,28 @@ const TEAM_ROUTES = {
     '黃組': ["Em", "D", "C", "Am", "G"]
 };
 
-// 5 大關卡手機顯示提示
-const HINTS_DB = {
-    "C": "在活動範圍四處散落著船長的戰帖，請找到戰帖並與北商海盜的船長展開激烈的對決吧！（請先找到對應隊伍顏色的氣球，黏貼於非慣用邊肩膀上，每人一顆）",
-    "Am": "請尋找美麗的變裝女僕，並完成女僕的需求。",
-    "G": "請幫助藝術家完成作品。",
-    "Em": "觀察四周張貼的新聞，並找到歌手。",
-    "D": "請幫助解決藝術家的困難。"
+// 5 大關卡完整資料資料庫
+const CHORDS_INFO = {
+    "C": {
+        title: "北商海盜的戰帖",
+        hint: "在活動範圍四處散落著船長的戰帖，請找到戰帖並與北商海盜的船長展開激烈的對決吧！（請先找到對應隊伍顏色的氣球，並黏貼在非慣用邊的肩上，組員每人一顆。）"
+    },
+    "Am": {
+        title: "偶然的邂逅",
+        hint: "請尋找美麗的變裝女僕，並完成女僕的需求。"
+    },
+    "G": {
+        title: "流浪的旅行商人",
+        hint: "請幫助藝術家完成作品。"
+    },
+    "Em": {
+        title: "旅行商人的誹聞",
+        hint: "觀察四周張貼的新聞，並找到歌手。"
+    },
+    "D": {
+        title: "藝術家的苦衷",
+        hint: "請幫助解決藝術家的困難。"
+    }
 };
 
 const teams = {};
@@ -48,7 +63,7 @@ function cleanupGhostPlayers(teamName) {
     const t = teams[teamName];
     if (!t) return;
     const now = Date.now();
-    const timeout = 180000; 
+    const timeout = 180000; // 3分鐘 timeout
 
     const onlinePlayers = t.players.filter(p => (now - p.lastSeen) < timeout);
     if (onlinePlayers.length !== t.players.length) {
@@ -86,11 +101,13 @@ function getLeaderboard() {
     });
 }
 
+// 重置 API
 app.get('/api/reset', (req, res) => {
     initTeams();
-    res.json({ success: true, message: "所有關卡與隊伍資料已成功重置！" });
+    res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
 });
 
+// 分配與驗證隊伍 API
 app.get('/api/assign-team', (req, res) => {
     const { existingPlayerId, existingTeam } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
@@ -105,7 +122,7 @@ app.get('/api/assign-team', (req, res) => {
                     team: tName,
                     defaultName: existingPlayer.name,
                     chords: teams[tName].chords,
-                    hints: teams[tName].chords.map(c => HINTS_DB[c])
+                    chordsInfo: teams[tName].chords.map(c => CHORDS_INFO[c])
                 });
             }
         }
@@ -123,7 +140,7 @@ app.get('/api/assign-team', (req, res) => {
                 team: existingTeam,
                 defaultName,
                 chords: teams[existingTeam].chords,
-                hints: teams[existingTeam].chords.map(c => HINTS_DB[c])
+                chordsInfo: teams[existingTeam].chords.map(c => CHORDS_INFO[c])
             });
         }
     }
@@ -152,10 +169,11 @@ app.get('/api/assign-team', (req, res) => {
         team: minTeam,
         defaultName,
         chords: teams[minTeam].chords,
-        hints: teams[minTeam].chords.map(c => HINTS_DB[c])
+        chordsInfo: teams[minTeam].chords.map(c => CHORDS_INFO[c])
     });
 });
 
+// 狀態輪詢 API
 app.get('/api/status', (req, res) => {
     const { team, playerId } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
@@ -212,7 +230,7 @@ app.get('/api/status', (req, res) => {
             isStarted: t.isStarted,
             currentLevelIndex: t.currentLevelIndex,
             chords: t.chords,
-            hints: t.chords.map(c => HINTS_DB[c]),
+            chordsInfo: t.chords.map(c => CHORDS_INFO[c]),
             hasSubmitted: !!t.submissions[playerId],
             levelResult: t.levelResult
         };
@@ -221,6 +239,7 @@ app.get('/api/status', (req, res) => {
     res.json({ teamCounts, teamData, leaderboard: getLeaderboard() });
 });
 
+// 玩家動作 API
 app.post('/api/action', (req, res) => {
     const { playerId, team, action, data } = req.body;
     const teamData = teams[team];
