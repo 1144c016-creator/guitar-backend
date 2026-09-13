@@ -9,12 +9,13 @@ app.use(express.json());
 const ADMIN_USER = '0921';
 const ADMIN_PASS = '1144c016';
 
-// 全局遊戲開始狀態 (預設關閉，需管理員點擊開啟)
+// 全局遊戲開始狀態與廣播訊息
 let isGameGlobalStarted = false;
+let globalBroadcast = { id: 0, message: "" };
 
 const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
 
-// 各組 5 關錯開分流路線（C, Am, G, Em, D）
+// 各組 5 關錯開分流路線
 const TEAM_ROUTES = {
     '紅組': ["C", "Am", "G", "Em", "D"],
     '藍組': ["Am", "G", "Em", "D", "C"],
@@ -90,6 +91,12 @@ function cleanupGhostPlayers(teamName) {
     }
 }
 
+function getTotalPlayersCount() {
+    let total = 0;
+    TEAMS.forEach(t => total += teams[t].players.length);
+    return total;
+}
+
 function getLeaderboard() {
     return Object.keys(teams).map(teamName => {
         const t = teams[teamName];
@@ -136,7 +143,12 @@ function getAdminDashboardData() {
             submittedCount: Object.keys(t.submissions).length,
             wrongAttempts: t.wrongAttempts,
             elapsedSeconds: elapsed,
-            players: t.players.map(p => ({ id: p.id, name: p.name, isReady: p.isReady }))
+            players: t.players.map(p => ({
+                id: p.id,
+                name: p.name,
+                isReady: p.isReady,
+                hasSubmitted: !!t.submissions[p.id]
+            }))
         };
     });
 }
@@ -152,9 +164,44 @@ app.post('/api/admin/login', (req, res) => {
     return res.status(401).json({ success: false, error: "管理員帳號或密碼錯誤！" });
 });
 
+// 管理員廣播發送
+app.post('/api/admin/broadcast', (req, res) => {
+    const { message } = req.body;
+    globalBroadcast = {
+        id: Date.now(),
+        message: message ? message.trim() : ""
+    };
+    res.json({ success: true, broadcast: globalBroadcast });
+});
+
+// 管理員強制跳關
+app.post('/api/admin/force-pass', (req, res) => {
+    const { team } = req.body;
+    const t = teams[team];
+    if (!t) return res.status(400).json({ error: "小隊不存在" });
+
+    if (!t.isStarted) {
+        t.isStarted = true;
+        t.startTime = Date.now();
+    }
+
+    if (t.currentLevelIndex < t.chords.length) {
+        t.currentLevelIndex += 1;
+        t.submissions = {};
+        t.levelResult = null;
+        t.activePlayers = t.players.map(p => p.id);
+
+        if (t.currentLevelIndex >= t.chords.length && !t.finishTimeSeconds) {
+            t.finishTimeSeconds = Math.floor((Date.now() - t.startTime) / 1000);
+        }
+    }
+
+    res.json({ success: true, message: `${team} 已強制通關目前關卡` });
+});
+
 // 管理員切換全局遊戲開關
 app.post('/api/admin/toggle-global-start', (req, res) => {
-    const { action } = req.body; // 'start' or 'stop'
+    const { action } = req.body;
     if (action === 'start') {
         isGameGlobalStarted = true;
     } else if (action === 'stop') {
@@ -169,6 +216,7 @@ app.post('/api/admin/toggle-global-start', (req, res) => {
 app.get('/api/reset', (req, res) => {
     initTeams();
     isGameGlobalStarted = false;
+    globalBroadcast = { id: 0, message: "" };
     res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
 });
 
@@ -177,7 +225,6 @@ app.get('/api/assign-team', (req, res) => {
     const { existingPlayerId, existingTeam } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
 
-    // 如果遊戲未由管理員開啟，且非舊玩家重連，則拒絕進入
     if (!isGameGlobalStarted && !existingPlayerId) {
         return res.status(403).json({ error: "GAME_NOT_STARTED", message: "遊戲尚未由管理員開啟，請稍後！" });
     }
@@ -246,7 +293,7 @@ app.get('/api/assign-team', (req, res) => {
     });
 });
 
-// 狀態輪詢 API (包含一般玩家狀態與管理員數據)
+// 狀態輪詢 API
 app.get('/api/status', (req, res) => {
     const { team, playerId } = req.query;
     TEAMS.forEach(cleanupGhostPlayers);
@@ -311,6 +358,8 @@ app.get('/api/status', (req, res) => {
 
     res.json({ 
         isGameGlobalStarted,
+        totalGlobalPlayers: getTotalPlayersCount(),
+        broadcast: globalBroadcast,
         teamCounts, 
         teamData, 
         leaderboard: getLeaderboard(),
