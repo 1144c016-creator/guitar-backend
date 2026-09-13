@@ -5,8 +5,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 預設隊伍名稱與題目池
-const TEAMS = ['紅組', '藍組', '綠組', '黃組', '紫組', '橘組'];
+// 預設隊伍名稱（已設定為 4 組）與題目池
+const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
 const CHORD_POOL = ["C", "G", "Am", "Em", "F", "D", "C7"];
 const LEVEL_MODES = [
     { type: 'lock', name: '全員獨立解鎖' },
@@ -134,13 +134,12 @@ app.post('/api/action', (req, res) => {
         return res.json({ success: true });
     }
 
-    // 合奏模式：即時更新自己的琴弦（不覆蓋隊友，並重置 confirmation 狀態）
+    // 合奏模式：即時更新自己的琴弦
     if (action === 'ensemble_update') {
         if (!teamData.ensembleFrets) teamData.ensembleFrets = {};
         if (data && data.frets) {
             Object.assign(teamData.ensembleFrets, data.frets);
         }
-        // 重置確認狀態，防止手殘改動時卡在舊的已確認狀態
         teamData.ensembleDone = {};
         return res.json({ success: true });
     }
