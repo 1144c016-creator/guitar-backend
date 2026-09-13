@@ -1,293 +1,280 @@
 const express = require('express');
 const cors = require('cors');
-
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
-
-// 各組分流路線 (前 6 關完全錯開 + 第 7 關 BOSS C7)
+// ==========================================
+// 1. 關卡路線設定 (5 關完全錯開)
+// ==========================================
 const TEAM_ROUTES = {
-    '紅組': ["C", "Am", "G", "Em", "F", "D", "C7"],
-    '藍組': ["Am", "G", "Em", "F", "D", "C", "C7"],
-    '綠組': ["G", "Em", "F", "D", "C", "Am", "C7"],
-    '黃組': ["Em", "F", "D", "C", "Am", "G", "C7"]
+    '紅組': ["C", "Am", "G", "Em", "D"],
+    '藍組': ["Am", "G", "Em", "D", "C"],
+    '綠組': ["G", "Em", "D", "C", "Am"],
+    '黃組': ["Em", "D", "C", "Am", "G"]
 };
 
-// 隱藏和弦名稱，手機畫面上僅顯示線索
-const HINTS_DB = {
-    "C": "尋找琴頸最上方的階梯！由三根手指層層築起的亮麗暖音。",
-    "Am": "當陽光褪去，與 C 僅有一指之差的平行低語。",
-    "G": "跨越最狂野的高低音！六弦與一弦在第 3 品同時緊扣的開朗陽光。",
-    "Em": "極致簡潔的搖滾靈魂！全按法僅需兩根手指壓在第 2 品的低沉律動。",
-    "F": "橫跨一二弦的大魔王關卡！考驗全隊不服輸的指力。",
-    "D": "靜音高掛的粗弦！三指在下半部形成三角形的清脆躍動。",
-    "C7": "打破傳統和聲的最後一把鑰匙！加入小七音解開傳承多年的爵士總決戰。"
-};
-
-const teams = {};
-
-function initTeams() {
-    TEAMS.forEach(team => {
-        teams[team] = {
-            players: [],
-            activePlayers: [],
-            isStarted: false,
-            startTime: null,
-            finishTimeSeconds: null,
-            currentLevelIndex: 0,
-            chords: TEAM_ROUTES[team],
-            submissions: {},
-            levelResult: null,
-            wrongAttempts: 0
-        };
-    });
-}
-initTeams();
-
-// 清理離線幽靈玩家 (3 分鐘 timeout)
-function cleanupGhostPlayers(teamName) {
-    const t = teams[teamName];
-    if (!t) return;
-    const now = Date.now();
-    const timeout = 180000; 
-
-    const onlinePlayers = t.players.filter(p => (now - p.lastSeen) < timeout);
-    if (onlinePlayers.length !== t.players.length) {
-        t.players = onlinePlayers;
-        const onlineIds = onlinePlayers.map(p => p.id);
-        t.activePlayers = t.activePlayers.filter(id => onlineIds.includes(id));
-        
-        Object.keys(t.submissions).forEach(pId => {
-            if (!onlineIds.includes(pId)) delete t.submissions[pId];
-        });
-
-        if (t.players.length === 0) {
-            t.isStarted = false;
-            t.currentLevelIndex = 0;
-        }
+// ==========================================
+// 2. 5 大和弦關卡內容與謎題設定範本
+// ==========================================
+const LEVEL_DATA = {
+    "C": {
+        levelId: "LV-C",
+        title: "C 和弦 - 明亮的起點",
+        theme: "主音城堡",
+        timeLimit: 0, // 0 為無限制，或設定秒數
+        introText: "歡迎來到音樂大道的起點，這裡充滿了和諧的根音。",
+        puzzleContext: "請輸入開啟第一道門的 4 位數金鑰。",
+        answer: "1358",
+        clues: [
+            { id: "c_clue_1", name: "微黃的樂譜", desc: "上面標註著 C - E - G 三個音符。" }
+        ],
+        hints: [
+            "提示 1：觀察樂譜上的音符對應數字。",
+            "提示 2：C=1, E=3, G=5。",
+            "解答：密碼為 1358。"
+        ]
+    },
+    "Am": {
+        levelId: "LV-Am",
+        title: "Am 和弦 - 憂傷的平行調",
+        theme: "陰暗小徑",
+        timeLimit: 0,
+        introText: "空氣中帶著淡淡的小調憂傷，這裡藏著隱密的線索。",
+        puzzleContext: "牆上的石板印著殘缺的符號，請填入對應字串。",
+        answer: "6136",
+        clues: [
+            { id: "am_clue_1", name: "舊式音叉", desc: "敲擊時發出 A 音的頻率。" }
+        ],
+        hints: [
+            "提示 1：小調的根音起點與 C 大調不同。",
+            "提示 2：音名 A 對應的簡譜數字是 6。",
+            "解答：密碼為 6136。"
+        ]
+    },
+    "G": {
+        levelId: "LV-G",
+        title: "G 和弦 - 屬音的引力",
+        theme: "風車燈塔",
+        timeLimit: 0,
+        introText: "強烈的導向力量將你拉向這裡，試圖尋求終止的解答。",
+        puzzleContext: "旋轉燈塔的密碼盤，輸入正確的解碼序列。",
+        answer: "5725",
+        clues: [
+            { id: "g_clue_1", name: "指南針", desc: "指針始終指向屬音 G 的方向。" }
+        ],
+        hints: [
+            "提示 1：G 大調和弦包含 G, B, D。",
+            "提示 2：對應簡譜音階 5, 7, 2。",
+            "解答：密碼為 5725。"
+        ]
+    },
+    "Em": {
+        levelId: "LV-Em",
+        title: "Em 和弦 - 沉思的副屬調",
+        theme: "密林廢墟",
+        timeLimit: 0,
+        introText: "森林深處十分安靜，只有吉他前奏的殘音在縈繞。",
+        puzzleContext: "請解開石門上的琴弦鎖。",
+        answer: "3573",
+        clues: [
+            { id: "em_clue_1", name: "斷裂的吉他弦", desc: "那是第六弦 E 弦的殘片。" }
+        ],
+        hints: [
+            "提示 1：E - G - B 的音程關係。",
+            "提示 2：分別代表簡譜中的 3, 5, 7。",
+            "解答：密碼為 3573。"
+        ]
+    },
+    "D": {
+        levelId: "LV-D",
+        title: "D 和弦 - 光彩的大調終章",
+        theme: "陽光聖殿",
+        timeLimit: 0,
+        introText: "陽光灑落，這是通往最終勝利前最重要的考驗。",
+        puzzleContext: "輸入最終驗證碼以完成此組別的總冒險。",
+        answer: "2462",
+        clues: [
+            { id: "d_clue_1", name: "黃金徽章", desc: "上面刻著 D 大調的升號記號 #F。" }
+        ],
+        hints: [
+            "提示 1：D 和弦包含 D - #F - A。",
+            "提示 2：注意包含升半音的音符順序。",
+            "解答：密碼為 2462。"
+        ]
     }
-}
+};
 
-function getLeaderboard() {
-    return Object.keys(teams).map(teamName => {
-        const t = teams[teamName];
-        return {
-            team: teamName,
-            memberCount: t.players.length,
-            currentLevel: t.currentLevelIndex + 1,
-            isFinished: t.currentLevelIndex >= t.chords.length,
-            finishTimeSeconds: t.finishTimeSeconds || 0,
-            wrongAttempts: t.wrongAttempts || 0
-        };
-    }).sort((a, b) => {
-        if (a.isFinished && !b.isFinished) return -1;
-        if (!a.isFinished && b.isFinished) return 1;
-        if (a.isFinished && b.isFinished) return a.finishTimeSeconds - b.finishTimeSeconds;
-        return b.currentLevel - a.currentLevel;
-    });
-}
+// ==========================================
+// 3. 全遊戲 UI 介面文字 (前端可統一拉取)
+// ==========================================
+const UI_TEXTS = {
+    header: {
+        timerLabel: "剩餘時間：",
+        unlimitedTimeLabel: "計時中：",
+        hintCounter: "提示：",
+        pauseBtn: "❚❚ 暫停",
+        settingsBtn: "⚙️ 設定"
+    },
+    puzzleUI: {
+        inputPlaceholder: "請輸入密碼...",
+        submitBtn: "確定提交",
+        resetBtn: "清除重填",
+        inventoryBtn: "🧰 開啟背包",
+        requestHintBtn: "💡 需要提示",
+        backBtn: "↩️ 返回觀察"
+    },
+    inventoryUI: {
+        title: "線索與道具",
+        emptyText: "目前尚未收集到任何線索。",
+        inspectBtn: "🔍 放大檢查",
+        useBtn: "✨ 使用此道具",
+        closeBtn: "✖ 關閉"
+    },
+    hintDialog: {
+        title: "求助提示",
+        confirmUnlock: "確定解鎖提示嗎？",
+        confirmBtn: "確定解鎖",
+        cancelBtn: "我再想想",
+        noHintsLeft: "本關卡提示已全部使用完畢！"
+    },
+    victoryScreen: {
+        title: "🎉 恭喜通關！",
+        subtitle: "你順利破解了本關卡的所有謎題！",
+        timeSpentLabel: "花費時間：",
+        hintsUsedLabel: "使用提示：",
+        nextLevelBtn: "➡️ 進入下一關",
+        restartBtn: "🔄 再玩一次",
+        mainMenuBtn: "🏠 回主選單"
+    },
+    defeatScreen: {
+        title: "⏰ 挑戰失敗",
+        subtitle: "沒能在規定時間內破解謎題...",
+        retryBtn: "🔄 重新試一次",
+        menuBtn: "🏠 返回關卡列表"
+    },
+    messages: {
+        wrongAnswer: "❌ 密碼錯誤，請再試一次！",
+        invalidFormat: "⚠️ 請輸入有效的字元！",
+        missingClue: "🔒 似乎還缺少了什麼線索...",
+        itemNotUsable: "無事發生，這個道具似乎無法在這裡使用。"
+    }
+};
 
-// 0. 重置 API
-app.get('/api/reset', (req, res) => {
-    initTeams();
-    res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
+// ==========================================
+// 4. 遊戲狀態儲存 (記憶體暫存)
+// ==========================================
+const teamProgress = {
+    '紅組': { currentStep: 0, hintsUsed: 0, startTime: Date.now() },
+    '藍組': { currentStep: 0, hintsUsed: 0, startTime: Date.now() },
+    '綠組': { currentStep: 0, hintsUsed: 0, startTime: Date.now() },
+    '黃組': { currentStep: 0, hintsUsed: 0, startTime: Date.now() }
+};
+
+// ==========================================
+// 5. API 路由端點
+// ==========================================
+
+// 取得 UI 全介面文字
+app.get('/api/ui-texts', (req, res) => {
+    res.json({ success: true, ui: UI_TEXTS });
 });
 
-// 1. 分配與驗證隊伍 API
-app.get('/api/assign-team', (req, res) => {
-    const { existingPlayerId, existingTeam } = req.query;
-    TEAMS.forEach(cleanupGhostPlayers);
+// 取得小隊當前關卡資訊
+app.get('/api/team-status/:teamName', (req, res) => {
+    const { teamName } = req.params;
+    const team = teamProgress[teamName];
 
-    if (existingPlayerId) {
-        for (const tName of TEAMS) {
-            const existingPlayer = teams[tName].players.find(p => p.id === existingPlayerId);
-            if (existingPlayer) {
-                existingPlayer.lastSeen = Date.now();
-                return res.json({
-                    playerId: existingPlayer.id,
-                    team: tName,
-                    defaultName: existingPlayer.name,
-                    chords: teams[tName].chords,
-                    hints: teams[tName].chords.map(c => HINTS_DB[c])
-                });
-            }
-        }
-
-        if (existingTeam && teams[existingTeam]) {
-            const defaultName = `隊員${teams[existingTeam].players.length + 1}`;
-            teams[existingTeam].players.push({
-                id: existingPlayerId,
-                name: defaultName,
-                isReady: false,
-                lastSeen: Date.now()
-            });
-            return res.json({
-                playerId: existingPlayerId,
-                team: existingTeam,
-                defaultName,
-                chords: teams[existingTeam].chords,
-                hints: teams[existingTeam].chords.map(c => HINTS_DB[c])
-            });
-        }
+    if (!team) {
+        return res.status(404).json({ success: false, message: "找不到該小隊" });
     }
 
-    let minTeam = TEAMS[0];
-    let minCount = teams[TEAMS[0]].players.length;
+    const route = TEAM_ROUTES[teamName];
+    const isCompleted = team.currentStep >= route.length;
 
-    TEAMS.forEach(team => {
-        if (teams[team].players.length < minCount) {
-            minCount = teams[team].players.length;
-            minTeam = team;
-        }
-    });
+    if (isCompleted) {
+        return res.json({
+            success: true,
+            isCompleted: true,
+            message: "🎉 恭喜完成全部 5 個關卡！"
+        });
+    }
 
-    const playerId = 'player_' + Math.random().toString(36).substring(2, 11);
-    const defaultName = `隊員${teams[minTeam].players.length + 1}`;
-    teams[minTeam].players.push({
-        id: playerId,
-        name: defaultName,
-        isReady: false,
-        lastSeen: Date.now()
-    });
+    const currentChord = route[team.currentStep];
+    const levelInfo = LEVEL_DATA[currentChord];
+
+    // 隱藏解答後傳給前端
+    const { answer, ...safeLevelInfo } = levelInfo;
 
     res.json({
-        playerId,
-        team: minTeam,
-        defaultName,
-        chords: teams[minTeam].chords,
-        hints: teams[minTeam].chords.map(c => HINTS_DB[c])
+        success: true,
+        teamName,
+        currentStep: team.currentStep + 1,
+        totalSteps: route.length,
+        chord: currentChord,
+        level: safeLevelInfo
     });
 });
 
-// 2. 狀態輪詢 API
-app.get('/api/status', (req, res) => {
-    const { team, playerId } = req.query;
-    TEAMS.forEach(cleanupGhostPlayers);
+// 提交驗證答案
+app.post('/api/submit-answer', (req, res) => {
+    const { teamName, answer } = req.body;
+    const team = teamProgress[teamName];
 
-    const teamCounts = {};
-    Object.keys(teams).forEach(t => teamCounts[t] = teams[t].players.length);
+    if (!team) return res.status(400).json({ success: false, message: "小隊名稱無效" });
 
-    let teamData = null;
-    if (team && teams[team]) {
-        const t = teams[team];
-        
-        let p = t.players.find(x => x.id === playerId);
-        if (p) {
-            p.lastSeen = Date.now();
-        } else if (playerId) {
-            p = { id: playerId, name: `隊員${t.players.length + 1}`, isReady: false, lastSeen: Date.now() };
-            t.players.push(p);
-        }
-
-        const readyCount = t.players.filter(x => x.isReady).length;
-        const totalLobbyPlayers = t.players.length;
-        const allReady = totalLobbyPlayers > 0 && readyCount === totalLobbyPlayers;
-        const activeList = t.activePlayers.length > 0 ? t.activePlayers : t.players.map(x => x.id);
-
-        const submittedCount = Object.keys(t.submissions).length;
-        if (t.isStarted && activeList.length > 0 && submittedCount >= activeList.length && !t.levelResult) {
-            const wrongPlayerNames = [];
-            activeList.forEach(pId => {
-                const sub = t.submissions[pId];
-                const playerObj = t.players.find(x => x.id === pId);
-                const pName = playerObj ? `${team}-${playerObj.name}` : pId;
-                if (!sub || !sub.isCorrect) {
-                    wrongPlayerNames.push(pName);
-                }
-            });
-
-            if (wrongPlayerNames.length === 0) {
-                t.levelResult = { status: 'passed', wrongPlayers: [] };
-            } else {
-                t.wrongAttempts += 1;
-                t.levelResult = { status: 'failed', wrongPlayers: wrongPlayerNames };
-            }
-        }
-
-        teamData = {
-            playersList: t.players.map(x => ({ id: x.id, fullName: `${team}-${x.name}`, isReady: x.isReady })),
-            totalPlayers: activeList.length,
-            submittedCount: submittedCount,
-            totalLobbyPlayers: totalLobbyPlayers,
-            readyCount: readyCount,
-            allReady: allReady,
-            isMyReady: p ? p.isReady : false,
-            playerIndex: activeList.indexOf(playerId),
-            isStarted: t.isStarted,
-            currentLevelIndex: t.currentLevelIndex,
-            chords: t.chords,
-            hints: t.chords.map(c => HINTS_DB[c]),
-            hasSubmitted: !!t.submissions[playerId],
-            levelResult: t.levelResult
-        };
+    const route = TEAM_ROUTES[teamName];
+    if (team.currentStep >= route.length) {
+        return res.json({ success: false, message: "已經通關全部關卡" });
     }
 
-    res.json({ teamCounts, teamData, leaderboard: getLeaderboard() });
+    const currentChord = route[team.currentStep];
+    const correctAnswer = LEVEL_DATA[currentChord].answer;
+
+    if (String(answer).trim() === String(correctAnswer).trim()) {
+        team.currentStep += 1; // 進到下一關
+        const isAllDone = team.currentStep >= route.length;
+
+        return res.json({
+            success: true,
+            correct: true,
+            isAllDone,
+            message: isAllDone ? "🎉 恭喜通關全數 5 關！" : "✅ 解答正確，準備進入下一關！"
+        });
+    } else {
+        return res.json({
+            success: true,
+            correct: false,
+            message: UI_TEXTS.messages.wrongAnswer
+        });
+    }
 });
 
-// 3. 玩家動作 API
-app.post('/api/action', (req, res) => {
-    const { playerId, team, action, data } = req.body;
-    const teamData = teams[team];
-    if (!teamData) return res.status(400).json({ error: "小隊不存在" });
+// 請求關卡提示
+app.post('/api/request-hint', (req, res) => {
+    const { teamName, hintIndex } = req.body;
+    const team = teamProgress[teamName];
+    if (!team) return res.status(400).json({ success: false, message: "小隊名稱無效" });
 
-    if (action === 'update_name') {
-        const player = teamData.players.find(p => p.id === playerId);
-        if (player && data && data.customName) {
-            player.name = data.customName.trim().substring(0, 10);
-        }
-        return res.json({ success: true });
+    const route = TEAM_ROUTES[teamName];
+    const currentChord = route[team.currentStep];
+    const hints = LEVEL_DATA[currentChord].hints;
+
+    if (hintIndex >= 0 && hintIndex < hints.length) {
+        team.hintsUsed += 1;
+        return res.json({
+            success: true,
+            hint: hints[hintIndex],
+            totalHintsUsed: team.hintsUsed
+        });
     }
 
-    if (action === 'toggle_ready') {
-        const player = teamData.players.find(p => p.id === playerId);
-        if (player) player.isReady = !!(data && data.isReady);
-        return res.json({ success: true });
-    }
-
-    if (action === 'start_game') {
-        if (!teamData.isStarted) {
-            teamData.isStarted = true;
-            teamData.startTime = Date.now();
-            teamData.activePlayers = teamData.players.map(p => p.id);
-            teamData.submissions = {};
-            teamData.levelResult = null;
-        }
-        return res.json({ success: true });
-    }
-
-    if (action === 'submit_answer') {
-        teamData.submissions[playerId] = {
-            isCorrect: !!(data && data.isCorrect),
-            userInput: data ? data.userInput : {}
-        };
-        return res.json({ success: true });
-    }
-
-    if (action === 'retry_level') {
-        teamData.submissions = {};
-        teamData.levelResult = null;
-        return res.json({ success: true });
-    }
-
-    if (action === 'next_level') {
-        if (teamData.levelResult && teamData.levelResult.status === 'passed') {
-            teamData.currentLevelIndex += 1;
-            teamData.submissions = {};
-            teamData.levelResult = null;
-            teamData.activePlayers = teamData.players.map(p => p.id);
-
-            if (teamData.currentLevelIndex >= teamData.chords.length && !teamData.finishTimeSeconds) {
-                teamData.finishTimeSeconds = Math.floor((Date.now() - teamData.startTime) / 1000);
-            }
-        }
-        return res.json({ success: true });
-    }
-
-    res.json({ success: true });
+    res.status(400).json({ success: false, message: "無效的提示索引" });
 });
 
+// 啟動伺服器
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🎸 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🚀 遊戲伺服器已於 Port ${PORT} 順利啟動！`);
+});
