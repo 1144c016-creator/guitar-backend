@@ -7,12 +7,12 @@ app.use(express.json());
 
 const TEAMS = ['紅組', '藍組', '綠組', '黃組'];
 
-// 各組專屬輪替路線（保證同時間零衝突）
+// 各組分流路線 (前 6 關完全錯開 + 第 7 關 BOSS C7)
 const TEAM_ROUTES = {
     '紅組': ["C", "Am", "G", "Em", "F", "D", "C7"],
-    '藍組': ["G", "Em", "F", "D", "C", "Am", "C7"],
-    '綠組': ["F", "D", "C", "Am", "G", "Em", "C7"],
-    '黃組': ["Am", "G", "Em", "F", "D", "C", "C7"]
+    '藍組': ["Am", "G", "Em", "F", "D", "C", "C7"],
+    '綠組': ["G", "Em", "F", "D", "C", "Am", "C7"],
+    '黃組': ["Em", "F", "D", "C", "Am", "G", "C7"]
 };
 
 const teams = {};
@@ -21,21 +21,20 @@ function initTeams() {
     TEAMS.forEach(team => {
         teams[team] = {
             players: [],             // [{ id, name, isReady, lastSeen }]
-            activePlayers: [],       
+            activePlayers: [],
             isStarted: false,
             startTime: null,
             finishTimeSeconds: null,
             currentLevelIndex: 0,
             chords: TEAM_ROUTES[team],
-            submissions: {},         // { playerId: { isCorrect, userInput } }
-            levelResult: null,       
+            submissions: {},
+            levelResult: null,
             wrongAttempts: 0
         };
     });
 }
 initTeams();
 
-// 自動清理超過 15 秒未更新心跳的離線玩家
 function cleanupGhostPlayers(teamName) {
     const t = teams[teamName];
     if (!t) return;
@@ -78,13 +77,13 @@ function getLeaderboard() {
     });
 }
 
-// 重置 API
+// 0. 重置 API
 app.get('/api/reset', (req, res) => {
     initTeams();
-    res.json({ success: true, message: "所有資料已重置！" });
+    res.json({ success: true, message: "所有小隊與遊戲資料已成功重置！" });
 });
 
-// 抽籤 API
+// 1. 分配隊伍 API
 app.get('/api/assign-team', (req, res) => {
     let minTeam = TEAMS[0];
     let minCount = teams[TEAMS[0]].players.length;
@@ -114,11 +113,14 @@ app.get('/api/assign-team', (req, res) => {
     });
 });
 
-// 狀態輪詢 API
+// 2. 狀態輪詢 API
 app.get('/api/status', (req, res) => {
     const { team, playerId } = req.query;
     
     TEAMS.forEach(cleanupGhostPlayers);
+
+    const teamCounts = {};
+    Object.keys(teams).forEach(t => teamCounts[t] = teams[t].players.length);
 
     let teamData = null;
     if (team && teams[team]) {
@@ -139,7 +141,9 @@ app.get('/api/status', (req, res) => {
                 const sub = t.submissions[pId];
                 const playerObj = t.players.find(x => x.id === pId);
                 const pName = playerObj ? `${team}-${playerObj.name}` : pId;
-                if (!sub || !sub.isCorrect) wrongPlayerNames.push(pName);
+                if (!sub || !sub.isCorrect) {
+                    wrongPlayerNames.push(pName);
+                }
             });
 
             if (wrongPlayerNames.length === 0) {
@@ -158,6 +162,7 @@ app.get('/api/status', (req, res) => {
             readyCount: readyCount,
             allReady: allReady,
             isMyReady: p ? p.isReady : false,
+            playerIndex: activeList.indexOf(playerId),
             isStarted: t.isStarted,
             currentLevelIndex: t.currentLevelIndex,
             chords: t.chords,
@@ -166,10 +171,10 @@ app.get('/api/status', (req, res) => {
         };
     }
 
-    res.json({ teamData, leaderboard: getLeaderboard() });
+    res.json({ teamCounts, teamData, leaderboard: getLeaderboard() });
 });
 
-// 動作 API
+// 3. 玩家動作 API
 app.post('/api/action', (req, res) => {
     const { playerId, team, action, data } = req.body;
     const teamData = teams[team];
@@ -225,13 +230,6 @@ app.post('/api/action', (req, res) => {
                 teamData.finishTimeSeconds = Math.floor((Date.now() - teamData.startTime) / 1000);
             }
         }
-        return res.json({ success: true });
-    }
-
-    if (action === 'leave_team') {
-        teamData.players = teamData.players.filter(p => p.id !== playerId);
-        teamData.activePlayers = teamData.activePlayers.filter(id => id !== playerId);
-        delete teamData.submissions[playerId];
         return res.json({ success: true });
     }
 
